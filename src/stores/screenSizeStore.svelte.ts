@@ -1,22 +1,14 @@
 /**
  * @file src/stores/screenSizeStore.svelte.ts
- * @description Manages the screen size states
+ * @description Manages the screen size states using Svelte 5 runes
  *
  * Features:
  * - Enum for different screen sizes matching Tailwind CSS breakpoints
- * - Screen size breakpoints (Tailwind defaults):
- *   - xs: < 640px (mobile)
- *   - sm: 640px (mobile landscape/tablet portrait)
- *   - md: 768px (tablet landscape)
- *   - lg: 1024px (small desktop)
- *   - xl: 1280px (desktop)
- *   - 2xl: 1536px (large desktop)
- * - Reactive screen size tracking
- * - Derived values for different screen states
- * - Debounced screen size updates
+ * - Reactive tracking of window width and height
+ * - Derived states for common screen size categories (mobile, tablet, desktop)
+ * - Debounced updates for performance during resize events
+ * - Automatic initialization and cleanup using $effect.root
  */
-
-import { store } from '@utils/reactivity.svelte';
 
 // Enum for screen sizes (matches Tailwind CSS breakpoints)
 export enum ScreenSize {
@@ -30,15 +22,18 @@ export enum ScreenSize {
 
 // Screen size breakpoints (Tailwind defaults)
 const BREAKPOINTS = {
-	XS: 0, // Extra small devices
-	SM: 640, // Small devices (mobile landscape/tablet portrait)
-	MD: 768, // Medium devices (tablet landscape)
-	LG: 1024, // Large devices (small desktop)
-	XL: 1280, // Extra large devices (desktop)
-	XXL: 1536 // 2x extra large devices (large desktop)
+	SM: 640,
+	MD: 768,
+	LG: 1024,
+	XL: 1280,
+	XXL: 1536
 } as const;
 
-// Helper function to get screen size name
+/**
+ * Determines the current ScreenSize based on window width.
+ * @param width The current window inner width.
+ * @returns The corresponding ScreenSize enum value.
+ */
 function getScreenSizeName(width: number): ScreenSize {
 	if (width < BREAKPOINTS.SM) {
 		return ScreenSize.XS;
@@ -55,108 +50,148 @@ function getScreenSizeName(width: number): ScreenSize {
 	}
 }
 
-// Create base stores
-function createScreenSizeStores() {
-	// Initialize with default values
-	const initialWidth = typeof window !== 'undefined' ? window.innerWidth : 1024;
-	const initialHeight = typeof window !== 'undefined' ? window.innerHeight : 768;
-	const initialSize = getScreenSizeName(initialWidth);
-	// Create stores from state
-	const widthStore = store<number>(initialWidth);
-	const heightStore = store<number>(initialHeight);
-	const currentSizeStore = store<ScreenSize>(initialSize);
+/**
+ * Manages reactive screen size state for the application.
+ * Uses Svelte 5 runes for efficient and direct state management.
+ */
+class ScreenSizeStore {
+	// Core reactive state properties using $state()
+	// Initialize with sensible defaults for SSR, will be updated on client-side.
+	width = $state(typeof window !== 'undefined' ? window.innerWidth : 1024);
+	height = $state(typeof window !== 'undefined' ? window.innerHeight : 768);
 
-	// Derived states
-	// Remove previous $derived usage for isMobile, isTablet, isDesktop, isLargeScreen
-	const isMobileStore = store(() => {
-		const size = currentSizeStore.value;
-		return size === ScreenSize.XS || size === ScreenSize.SM;
-	});
-	const isTabletStore = store(() => currentSizeStore.value === ScreenSize.MD);
-	const isDesktopStore = store(() => {
-		const size = currentSizeStore.value;
-		return size === ScreenSize.LG || size === ScreenSize.XL || size === ScreenSize.XXL;
-	});
-	const isLargeScreenStore = store(() => {
-		const size = currentSizeStore.value;
-		return size === ScreenSize.XL || size === ScreenSize.XXL;
-	});
+	// Internal variable to hold the debounce timeout ID
+	private resizeTimeout: ReturnType<typeof setTimeout> | null = null;
 
-	// Debounce function
-	function debounce(fn: () => void, delay: number): () => void {
-		let timeoutId: ReturnType<typeof setTimeout>;
+	constructor() {
+		// No direct initialization in constructor, relies on $effect.root for setup.
+	}
+
+	// --- Derived State ($derived) ---
+
+	/**
+	 * The current ScreenSize category (e.g., 'md', 'lg').
+	 * Automatically updates when `width` changes.
+	 */
+	// FIX: Use $derived directly as a class field declaration
+	currentSize = $derived(getScreenSizeName(this.width));
+
+	/**
+	 * True if the current screen size is mobile (XS or SM).
+	 */
+	isMobile = $derived(this.currentSize === ScreenSize.XS || this.currentSize === ScreenSize.SM);
+
+	/**
+	 * True if the current screen size is tablet (MD).
+	 */
+	isTablet = $derived(this.currentSize === ScreenSize.MD);
+
+	/**
+	 * True if the current screen size is desktop (LG, XL, or XXL).
+	 */
+	isDesktop = $derived(this.currentSize === ScreenSize.LG || this.currentSize === ScreenSize.XL || this.currentSize === ScreenSize.XXL);
+
+	/**
+	 * True if the current screen is a large desktop (XL or XXL).
+	 */
+	isLargeScreen = $derived(this.currentSize === ScreenSize.XL || this.currentSize === ScreenSize.XXL);
+
+	// --- Internal Helper Methods ---
+
+	/**
+	 * Debounces a function call.
+	 * @param fn The function to debounce.
+	 * @param delay The debounce delay in milliseconds.
+	 * @returns A debounced version of the function.
+	 */
+	private debounce(fn: () => void, delay: number): () => void {
 		return () => {
-			clearTimeout(timeoutId);
-			timeoutId = setTimeout(fn, delay);
+			if (this.resizeTimeout) {
+				clearTimeout(this.resizeTimeout);
+			}
+			this.resizeTimeout = setTimeout(fn, delay);
 		};
 	}
 
-	// Update function (only update currentSizeStore if category changes)
-	function updateScreenSize() {
+	/**
+	 * Updates the internal `width` and `height` reactive states.
+	 * Only updates `currentSize` if its category changes.
+	 */
+	private updateScreenSize = () => { // Use arrow function to bind 'this'
 		if (typeof window !== 'undefined') {
-			const width = window.innerWidth;
-			const height = window.innerHeight;
-			const prevSize = currentSizeStore.value;
-			const newSize = getScreenSizeName(width);
-			widthStore.set(width);
-			heightStore.set(height);
-			if (prevSize !== newSize) {
-				currentSizeStore.set(newSize);
+			const newWidth = window.innerWidth;
+			const newHeight = window.innerHeight;
+
+			// Get previous size category BEFORE updating width, height
+			// This access now reads the $derived property directly
+			const prevSizeCategory = this.currentSize;
+
+			// Update width and height directly. This will trigger currentSize to re-derive.
+			this.width = newWidth;
+			this.height = newHeight;
+
+			// Check if the screen size CATEGORY has changed.
+			// This check is now mostly for logging/optimization, as $derived will handle currentSize automatically.
+			const newSizeCategory = this.currentSize; // this will be the newly derived value
+			if (prevSizeCategory !== newSizeCategory) {
+				console.debug('ScreenSizeStore: Screen size category changed to', newSizeCategory);
 			}
 		}
-	}
+	};
 
-	// Setup listener function
-	function setupListener(): () => void {
+	// --- Public Lifecycle Methods ---
+
+	/**
+	 * Sets up the resize event listener. This method is called by $effect.root.
+	 * @returns A cleanup function to remove the event listener.
+	 */
+	public setupListener(): () => void {
 		if (typeof window === 'undefined') {
-			return () => {};
+			return () => {}; // Return a no-op function for SSR
 		}
 
-		const debouncedUpdate = debounce(updateScreenSize, 150);
+		const debouncedUpdate = this.debounce(this.updateScreenSize, 150);
 
-		// Initial update
-		updateScreenSize();
+		// Initial update on setup
+		this.updateScreenSize();
 
 		// Add event listener
 		window.addEventListener('resize', debouncedUpdate);
 
-		// Return cleanup function
+		// Return cleanup function for $effect.root
 		return () => {
 			window.removeEventListener('resize', debouncedUpdate);
+			if (this.resizeTimeout) {
+				clearTimeout(this.resizeTimeout);
+				this.resizeTimeout = null;
+			}
 		};
 	}
-
-	// Setup root effect for initialization
-	$effect.root(() => {
-		setupListener();
-	});
-
-	return {
-		width: widthStore,
-		height: heightStore,
-		currentSize: currentSizeStore,
-		isMobile: isMobileStore,
-		isTablet: isTabletStore,
-		isDesktop: isDesktopStore,
-		isLargeScreen: isLargeScreenStore,
-		setupListener
-	};
 }
 
-// Create and export stores
-const stores = createScreenSizeStores();
+// --- Global Store Instance ---
+// Instantiate the single global screen size manager.
+export const screenSizeStore = new ScreenSizeStore();
 
-// Export individual stores
-export const screenWidth = stores.width;
-export const screenHeight = stores.height;
-export const screenSize = stores.currentSize;
-export const isMobile = stores.isMobile;
-export const isTablet = stores.isTablet;
-export const isDesktop = stores.isDesktop;
-export const isLargeScreen = stores.isLargeScreen;
+// --- Lifecycle Management for the Global Store ---
+// Use $effect.root to manage initialization and cleanup for the global store.
+// This ensures it runs once when the app starts (on client-side) and cleans up on unload.
+$effect.root(() => {
+	// The `setupListener` method returns a cleanup function, which $effect.root
+	// will automatically call when its scope is destroyed (e.g., on page unload).
+	const cleanup = screenSizeStore.setupListener();
+	return cleanup; // This is the cleanup function for $effect.root
+});
 
-// Export setup function
-export const setupScreenSizeListener = stores.setupListener;
+// --- Export individual reactive states for easier consumption ---
+// Components can import these directly for reactivity.
+export const screenWidth = screenSizeStore.width;
+export const screenHeight = screenSizeStore.height;
+export const screenSize = screenSizeStore.currentSize; // This is the derived property
+export const isMobile = screenSizeStore.isMobile;
+export const isTablet = screenSizeStore.isTablet;
+export const isDesktop = screenSizeStore.isDesktop;
+export const isLargeScreen = screenSizeStore.isLargeScreen;
 
-// Export helper function for direct use
+// Export the helper function for direct use if needed outside the store logic
 export { getScreenSizeName };

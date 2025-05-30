@@ -6,9 +6,6 @@ import type { WidgetFunction, WidgetModule } from './types';
 import type { GuiSchema } from './core/group/types';
 import { v4 as uuidv4 } from 'uuid'; // Import UUID generator for unique widget IDs
 
-// Reactive stores
-import { store } from '@utils/reactivity.svelte'; // Import reactive store utility
-
 // System Logger
 import { logger } from '@utils/logger.svelte';
 
@@ -18,7 +15,7 @@ function checkDependencies(widget: WidgetFunction): boolean {
 		return true; // No dependencies, so it's valid
 	}
 	for (const dep of widget.dependencies) {
-		if (!widgetFunctions.get().has(dep)) {
+		if (!widgetFunctions.has(dep)) {
 			logger.info(`Checking dependencies for widget: ${widget.Name} - missing dependency: ${dep}`);
 			return false; // Dependency is missing
 		}
@@ -31,12 +28,15 @@ const widgets: Record<string, WidgetFunction> = {};
 
 export default widgets;
 
-// State management with reactive stores
-export const widgetFunctions = store<Map<string, WidgetFunction>>(new Map()); // Store for widget functions
-const activeWidgetList = store<Set<string>>(new Set()); // Store for active widgets
+// State management with Svelte 5 runes
+export let widgetFunctions = $state<Map<string, WidgetFunction>>(new Map()); // Store for widget functions
+let activeWidgetList = $state<Set<string>>(new Set()); // Store for active widgets
 
-// init state
-let initialized = false; // Initialization status
+// Derived state for easier access
+export const activeWidgets = $derived(activeWidgetList);
+
+// Initialization state
+let initialized = $state(false); // Initialization status
 let dbInitPromise: Promise<void> | null = null; // Database initialization promise
 
 export function getGuiFields(params: Record<string, unknown>, schema: GuiSchema) {
@@ -138,10 +138,10 @@ export async function initializeWidgets(): Promise<void> {
 				logger.warn(`Failed to fetch widget status: ${error instanceof Error ? error.message : 'Unknown error'}, activating all widgets`);
 			}
 
-			// Update widget functions store
-			widgetFunctions.set(newWidgetFunctions);
+			// Update widget functions store using direct assignment
+			widgetFunctions = newWidgetFunctions;
 			// Set active widgets based on database status
-			activeWidgetList.set(new Set(activeWidgets));
+			activeWidgetList = new Set(activeWidgets);
 
 			// Log Initialization Summary
 			const coreWidgets = Array.from(newWidgetFunctions.values()).filter((w) => w.__isCore);
@@ -164,7 +164,7 @@ export async function initializeWidgets(): Promise<void> {
 }
 
 // Widget initialization state
-let widgetsInitialized = false;
+let widgetsInitialized = $state(false);
 
 export async function ensureWidgetsInitialized() {
 	if (!widgetsInitialized) {
@@ -181,6 +181,46 @@ export async function ensureWidgetsInitialized() {
 		}
 	}
 }
+
+// Utility functions for working with widget state
+export function isWidgetActive(widgetName: string): boolean {
+	return activeWidgetList.has(widgetName);
+}
+
+export function activateWidget(widgetName: string): void {
+	if (widgetFunctions.has(widgetName)) {
+		activeWidgetList = new Set([...activeWidgetList, widgetName]);
+		logger.debug(`Widget ${widgetName} activated`);
+	} else {
+		logger.warn(`Cannot activate widget ${widgetName} - not found`);
+	}
+}
+
+export function deactivateWidget(widgetName: string): void {
+	if (activeWidgetList.has(widgetName)) {
+		const newActiveList = new Set(activeWidgetList);
+		newActiveList.delete(widgetName);
+		activeWidgetList = newActiveList;
+		logger.debug(`Widget ${widgetName} deactivated`);
+	}
+}
+
+export function getWidgetByName(name: string): WidgetFunction | undefined {
+	return widgetFunctions.get(name);
+}
+
+export function getAllWidgetNames(): string[] {
+	return Array.from(widgetFunctions.keys());
+}
+
+export function getActiveWidgetNames(): string[] {
+	return Array.from(activeWidgetList);
+}
+
+// Derived state for components that need to react to widget changes
+export const widgetCount = $derived(widgetFunctions.size);
+export const activeWidgetCount = $derived(activeWidgetList.size);
+export const isInitialized = $derived(initialized);
 
 // Re-export everything from widgetManager for direct access
 export * from './widgetManager.svelte.ts';

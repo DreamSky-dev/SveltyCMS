@@ -9,16 +9,16 @@
  * - Update image editor state reactively
  */
 
-import { store } from '@utils/reactivity.svelte';
-import type Konva from 'konva';
+import type Konva from 'konva'; // Ensure Konva is installed and properly typed
 
 // Types
-interface EditAction {
+export interface EditAction {
 	undo: () => void;
 	redo: () => void;
 }
 
-interface ImageEditorState {
+// Interface for the image editor's internal state
+export interface ImageEditorState {
 	file: File | null;
 	saveEditedImage: boolean;
 	editHistory: EditAction[];
@@ -28,141 +28,161 @@ interface ImageEditorState {
 	imageNode: Konva.Image | null;
 }
 
-// Initial state
-const initialState: ImageEditorState = {
-	file: null,
-	saveEditedImage: false,
-	editHistory: [],
-	currentHistoryIndex: -1,
-	stage: null,
-	layer: null,
-	imageNode: null
-};
+/**
+ * Manages the state and operations of the image editor.
+ * Uses Svelte 5 runes ($state, $derived) for highly reactive and efficient state management.
+ */
+class ImageEditorStore {
+	// Reactive state properties using $state()
+	file = $state<File | null>(null);
+	saveEditedImage = $state(false);
+	editHistory = $state<EditAction[]>([]);
+	currentHistoryIndex = $state(-1);
+	stage = $state<Konva.Stage | null>(null);
+	layer = $state<Konva.Layer | null>(null);
+	imageNode = $state<Konva.Image | null>(null);
 
-// Create base stores
-function createImageEditorStores() {
-	// Base store
-	const state = store<ImageEditorState>(initialState);
-
-	// Derived values
-	const canUndo = $derived(state().currentHistoryIndex >= 0);
-	const canRedo = $derived(state().currentHistoryIndex < state().editHistory.length - 1);
-	const hasActiveImage = $derived(!!state().file && !!state().imageNode);
-
-	// Methods to update state
-	function setFile(file: File | null) {
-		state.update(($state) => ({ ...$state, file }));
+	constructor() {
+		// No specific initialization logic needed in the constructor itself,
+		// as $state variables are immediately reactive upon instantiation.
 	}
 
-	function setSaveEditedImage(value: boolean) {
-		state.update(($state) => ({ ...$state, saveEditedImage: value }));
+	// Derived state properties using $derived() for computed values
+	get canUndo(): boolean {
+		return $derived(this.currentHistoryIndex >= 0);
 	}
 
-	function setStage(stage: Konva.Stage) {
-		state.update(($state) => ({ ...$state, stage }));
+	get canRedo(): boolean {
+		return $derived(this.currentHistoryIndex < this.editHistory.length - 1);
 	}
 
-	function setLayer(layer: Konva.Layer) {
-		state.update(($state) => ({ ...$state, layer }));
+	get hasActiveImage(): boolean {
+		return $derived(!!this.file && !!this.imageNode);
 	}
 
-	function setImageNode(imageNode: Konva.Image) {
-		state.update(($state) => ({ ...$state, imageNode }));
+	// --- Public Methods to Mutate State ---
+
+	/**
+	 * Sets the file being edited.
+	 * @param file The new file object or null.
+	 */
+	setFile(file: File | null) {
+		this.file = file; // Direct assignment triggers reactivity
 	}
 
-	function addEditAction(action: EditAction) {
-		state.update(($state) => {
-			// Remove any redoable actions after current index
-			const editHistory = $state.editHistory.slice(0, $state.currentHistoryIndex + 1);
-			// Add new action
-			editHistory.push(action);
-			// Update state with new history and index
-			return {
-				...$state,
-				editHistory,
-				currentHistoryIndex: editHistory.length - 1
-			};
+	/**
+	 * Sets the flag indicating whether the image should be saved after editing.
+	 * @param value Boolean indicating whether to save.
+	 */
+	setSaveEditedImage(value: boolean) {
+		this.saveEditedImage = value; // Direct assignment
+	}
+
+	/**
+	 * Sets the Konva stage instance.
+	 * @param stage The Konva.Stage object.
+	 */
+	setStage(stage: Konva.Stage) {
+		this.stage = stage; // Direct assignment
+	}
+
+	/**
+	 * Sets the Konva layer instance.
+	 * @param layer The Konva.Layer object.
+	 */
+	setLayer(layer: Konva.Layer) {
+		this.layer = layer; // Direct assignment
+	}
+
+	/**
+	 * Sets the Konva image node instance.
+	 * @param imageNode The Konva.Image object.
+	 */
+	setImageNode(imageNode: Konva.Image) {
+		this.imageNode = imageNode; // Direct assignment
+	}
+
+	/**
+	 * Adds an edit action to the history. Redoable actions are removed if a new action is added.
+	 * @param action The EditAction object containing undo/redo functions.
+	 */
+	addEditAction(action: EditAction) {
+		// Slice the history to remove any actions beyond the current index
+		this.editHistory = this.editHistory.slice(0, this.currentHistoryIndex + 1);
+		// Add the new action
+		this.editHistory.push(action);
+		// Update the index
+		this.currentHistoryIndex = this.editHistory.length - 1;
+		// Since we modified an array directly, we re-assign it to ensure reactivity.
+		// Svelte 5 tracks array length/elements, but explicit re-assignment of the array reference
+		// is robust if you're chaining methods or modifying its contents.
+		// However, with push, pop, shift, unshift, splice, Svelte 5 automatically tracks the change.
+		// The key here is that `editHistory` itself is a `$state` variable.
+		// If you're using methods that modify the array *in place* (like push()),
+		// Svelte 5 tracks this fine. The `slice` creates a new array, so that's also handled.
+	}
+
+	/**
+	 * Performs the undo operation for the current action in history.
+	 */
+	undo() {
+		if (this.currentHistoryIndex >= 0) {
+			this.editHistory[this.currentHistoryIndex].undo();
+			this.currentHistoryIndex--; // Direct assignment
+		}
+	}
+
+	/**
+	 * Performs the redo operation for the next action in history.
+	 */
+	redo() {
+		if (this.currentHistoryIndex < this.editHistory.length - 1) {
+			this.currentHistoryIndex++; // Increment index first
+			this.editHistory[this.currentHistoryIndex].redo(); // Then perform action
+		}
+	}
+
+	/**
+	 * Clears the entire edit history.
+	 */
+	clearHistory() {
+		this.editHistory = []; // Direct assignment
+		this.currentHistoryIndex = -1; // Direct assignment
+	}
+
+	/**
+	 * Resets the entire image editor state to its initial values.
+	 */
+	reset() {
+		// Reset all $state properties to their initial values
+		this.file = null;
+		this.saveEditedImage = false;
+		this.editHistory = [];
+		this.currentHistoryIndex = -1;
+		this.stage = null;
+		this.layer = null;
+		this.imageNode = null;
+	}
+
+	/**
+	 * Provides a snapshot of the current internal state.
+	 * This is primarily for debugging or situations where you need a single object.
+	 */
+	get currentState(): ImageEditorState {
+		return $derived({
+			file: this.file,
+			saveEditedImage: this.saveEditedImage,
+			editHistory: this.editHistory, // Note: This will be a reference to the array
+			currentHistoryIndex: this.currentHistoryIndex,
+			stage: this.stage,
+			layer: this.layer,
+			imageNode: this.imageNode
 		});
 	}
-
-	function undo() {
-		state.update(($state) => {
-			if ($state.currentHistoryIndex >= 0) {
-				$state.editHistory[$state.currentHistoryIndex].undo();
-				return {
-					...$state,
-					currentHistoryIndex: $state.currentHistoryIndex - 1
-				};
-			}
-			return $state;
-		});
-	}
-
-	function redo() {
-		state.update(($state) => {
-			if ($state.currentHistoryIndex < $state.editHistory.length - 1) {
-				$state.editHistory[$state.currentHistoryIndex + 1].redo();
-				return {
-					...$state,
-					currentHistoryIndex: $state.currentHistoryIndex + 1
-				};
-			}
-			return $state;
-		});
-	}
-
-	function clearHistory() {
-		state.update(($state) => ({
-			...$state,
-			editHistory: [],
-			currentHistoryIndex: -1
-		}));
-	}
-
-	function reset() {
-		state.set(initialState);
-	}
-
-	return {
-		state,
-		canUndo,
-		canRedo,
-		hasActiveImage,
-		setFile,
-		setSaveEditedImage,
-		setStage,
-		setLayer,
-		setImageNode,
-		addEditAction,
-		undo,
-		redo,
-		clearHistory,
-		reset
-	};
 }
 
-// Create and export stores
-const stores = createImageEditorStores();
+// Instantiate the single global image editor store
+export const imageEditorStore = new ImageEditorStore();
 
-// Export main store with full interface
-export const imageEditorStore = {
-	subscribe: stores.state.subscribe,
-	setFile: stores.setFile,
-	setSaveEditedImage: stores.setSaveEditedImage,
-	setStage: stores.setStage,
-	setLayer: stores.setLayer,
-	setImageNode: stores.setImageNode,
-	addEditAction: stores.addEditAction,
-	undo: stores.undo,
-	redo: stores.redo,
-	clearHistory: stores.clearHistory,
-	reset: stores.reset
-};
-
-// Export derived values
-export const canUndo = { subscribe: () => stores.canUndo };
-export const canRedo = { subscribe: () => stores.canRedo };
-export const hasActiveImage = { subscribe: () => stores.hasActiveImage };
-
-// Export types
+// Export types for external use
 export type { EditAction, ImageEditorState };

@@ -1,6 +1,6 @@
 /**
  * @file src/stores/themeStore.svelte.ts
- * @description Theme management using Svelte 5 runes
+ * @description Theme management
  *
  * Features:
  * - Reactive theme state management with auto-refresh
@@ -10,9 +10,8 @@
  * - TypeScript support with custom Theme type
  */
 
-import { store } from '@utils/reactivity.svelte';
 import type { Theme } from '@src/databases/dbInterface';
-//import { dbAdapter } from '@src/databases/db';
+import { dbAdapter } from '@src/databases/db'; // Make sure this import is active and correct
 
 // Types
 interface ThemeState {
@@ -22,81 +21,104 @@ interface ThemeState {
 	lastUpdateAttempt: Date | null;
 }
 
-// Create base stores
-function createThemeStores() {
-	let refreshInterval: NodeJS.Timeout | null = null;
+/**
+ * Manages the application's theme state using Svelte 5 runes.
+ * This class provides reactive properties and methods for theme initialization,
+ * updating, and error handling, with automatic re-fetching.
+ */
+class ThemeStore {
+	// Reactive state properties using $state()
+	currentTheme = $state<Theme | null>(null);
+	isLoading = $state(false);
+	error = $state<string | null>(null);
+	lastUpdateAttempt = $state<Date | null>(null);
 
-	// Initial state
-	const initialState: ThemeState = {
-		currentTheme: null,
-		isLoading: false,
-		error: null,
-		lastUpdateAttempt: null
-	};
+	// Interval ID for auto-refresh, managed directly within the class instance
+	private refreshInterval: NodeJS.Timeout | null = null;
 
-	// Base store
-	const state = store<ThemeState>(initialState);
+	constructor() {
+		// Initialize theme when the store is instantiated or when dependencies change.
+		// Use $effect to run side effects and react to changes.
+		// We'll rely on explicit calls to initialize() rather than an effect that always runs
+		// to prevent unwanted re-initialization loops unless specific conditions are met.
+		// Auto-refresh will handle periodic updates.
+	}
 
-	// Subscribe to theme changess
-	const theme = store(state().currentTheme);
-	const hasTheme = store(!!state().currentTheme);
-	const themeName = store(state().currentTheme?.name ?? 'default');
-	const isDefault = store(state().currentTheme?.isDefault ?? false);
-	const isLoading = store(state().isLoading);
-	const error = store(state().error);
+	// Derived state for easy access
+	get hasTheme() {
+		return $derived(!!this.currentTheme);
+	}
 
-	// Initialize theme from database
-	async function initialize() {
-		state.update((s) => ({ ...s, isLoading: true, error: null }));
+	get themeName() {
+		return $derived(this.currentTheme?.name ?? 'default');
+	}
+
+	get isDefault() {
+		return $derived(this.currentTheme?.isDefault ?? false);
+	}
+
+	/**
+	 * Initializes the current theme by fetching the default theme from the database.
+	 * Updates loading, error, and theme states accordingly.
+	 * @returns Promise resolving to the fetched Theme or null.
+	 */
+	async initialize(): Promise<Theme | null> {
+		this.isLoading = true;
+		this.error = null; // Clear previous errors
 
 		try {
-			const theme = await dbAdapter?.getDefaultTheme();
-			state.update((s) => ({
-				...s,
-				currentTheme: theme ?? null,
-				isLoading: false,
-				lastUpdateAttempt: new Date()
-			}));
-
-			return theme;
+			// Ensure dbAdapter is available before calling
+			if (!dbAdapter) {
+				throw new Error('Database adapter not initialized.');
+			}
+			const theme = await dbAdapter.getDefaultTheme();
+			this.currentTheme = theme ?? null;
+			this.lastUpdateAttempt = new Date();
+			return this.currentTheme;
 		} catch (err) {
-			state.update((s) => ({
-				...s,
-				error: err instanceof Error ? err.message : 'Failed to initialize theme',
-				isLoading: false
-			}));
-			throw err;
+			this.error = err instanceof Error ? err.message : 'Failed to initialize theme';
+			console.error('Theme initialization error:', err);
+			return null;
+		} finally {
+			this.isLoading = false;
 		}
 	}
 
-	// Update theme
-	async function updateTheme(newTheme: Theme | string) {
-		state.update((s) => ({ ...s, isLoading: true, error: null }));
+	/**
+	 * Updates the application's theme in the database and local state.
+	 * Also updates the `dark` class on the `documentElement` for immediate visual feedback.
+	 * @param newTheme The new theme object or its name (string).
+	 * @returns Promise resolving to the updated Theme object.
+	 */
+	async updateTheme(newTheme: Theme | string): Promise<Theme> {
+		this.isLoading = true;
+		this.error = null; // Clear previous errors
 
 		try {
+			// Ensure dbAdapter is available before calling
+			if (!dbAdapter) {
+				throw new Error('Database adapter not initialized.');
+			}
+
 			// If a string is passed, create a basic theme object
-			const themeToUpdate =
+			const themeToUpdate: Theme =
 				typeof newTheme === 'string'
 					? {
 							name: newTheme,
-							_id: '',
-							path: '',
-							isDefault: false,
-							createdAt: new Date(),
-							updatedAt: new Date()
+							_id: '', // Placeholder, ideally this would come from a DB operation
+							path: '', // Placeholder
+							isDefault: false, // Placeholder
+							createdAt: new Date(), // Placeholder
+							updatedAt: new Date() // Placeholder
 						}
 					: newTheme;
 
-			// Update the theme in the database
-			await dbAdapter?.setDefaultTheme(themeToUpdate.name);
+			// Update the theme in the database by name
+			await dbAdapter.setDefaultTheme(themeToUpdate.name);
 
-			// Update the local state
-			state.update((s) => ({
-				...s,
-				currentTheme: themeToUpdate,
-				isLoading: false,
-				lastUpdateAttempt: new Date()
-			}));
+			// Update the local state directly
+			this.currentTheme = themeToUpdate;
+			this.lastUpdateAttempt = new Date();
 
 			// Update the document class for immediate visual feedback
 			if (typeof window !== 'undefined') {
@@ -106,105 +128,65 @@ function createThemeStores() {
 			return themeToUpdate;
 		} catch (err) {
 			const errorMessage = err instanceof Error ? err.message : 'Failed to update theme';
-			state.update((s) => ({
-				...s,
-				error: errorMessage,
-				isLoading: false
-			}));
-			throw new Error(`Failed to update theme: ${errorMessage}`);
+			this.error = errorMessage;
+			console.error('Theme update error:', err);
+			throw new Error(`Failed to update theme: ${errorMessage}`); // Re-throw for upstream handling
+		} finally {
+			this.isLoading = false;
 		}
 	}
 
-	// Clear error state
-	function clearError() {
-		state.update((s) => ({ ...s, error: null }));
+	/**
+	 * Clears the current error state.
+	 */
+	clearError() {
+		this.error = null;
 	}
 
-	// Auto-refresh theme periodically
-	function startAutoRefresh(interval = 30 * 60 * 1000) {
-		if (refreshInterval) stopAutoRefresh();
+	/**
+	 * Starts an interval to periodically re-initialize the theme.
+	 * Checks if the last update attempt is older than the interval.
+	 * @param interval Milliseconds between refresh checks (default: 30 minutes).
+	 */
+	startAutoRefresh(interval = 30 * 60 * 1000) {
+		if (this.refreshInterval) {
+			this.stopAutoRefresh(); // Clear any existing interval first
+		}
 
-		refreshInterval = setInterval(() => {
-			const currentState = state();
-			if (currentState.lastUpdateAttempt && Date.now() - currentState.lastUpdateAttempt.getTime() > interval) {
-				initialize().catch(console.error);
+		// Use $effect.root for lifecycle management if this needs to tie to component unmount,
+		// but since it's a global store, a direct setInterval is fine,
+		// and we'll manage cleanup on `window.unload`.
+		this.refreshInterval = setInterval(() => {
+			if (this.lastUpdateAttempt && Date.now() - this.lastUpdateAttempt.getTime() > interval) {
+				this.initialize().catch((e) => console.error('Auto-refresh theme error:', e));
 			}
 		}, interval);
 	}
 
-	// Stop auto-refresh
-	function stopAutoRefresh() {
-		if (refreshInterval) {
-			clearInterval(refreshInterval);
-			refreshInterval = null;
+	/**
+	 * Stops the automatic theme refresh interval.
+	 */
+	stopAutoRefresh() {
+		if (this.refreshInterval) {
+			clearInterval(this.refreshInterval);
+			this.refreshInterval = null;
 		}
 	}
-
-	return {
-		state,
-		theme,
-		hasTheme,
-		themeName,
-		isDefault,
-		isLoading,
-		error,
-		initialize,
-		updateTheme,
-		clearError,
-		startAutoRefresh,
-		stopAutoRefresh
-	};
 }
 
-// Create stores
-const stores = createThemeStores();
+// Instantiate the single global theme store
+export const themeStore = new ThemeStore();
 
-// Enhanced themeStore type to include currentTheme
-interface EnhancedThemeStore {
-	subscribe: (f: (value: ThemeState) => void) => () => void;
-	initialize: () => Promise<Theme | null | undefined>;
-	updateTheme: (newTheme: Theme | string) => Promise<Theme>;
-	currentTheme: Theme | null;
-}
+// Optional: Automatically initialize theme on application startup (client-side)
+// This effect runs once when the component/module using themeStore is first instantiated.
+$effect.root(() => {
+	if (typeof window !== 'undefined') {
+		themeStore.initialize().catch(console.error);
 
-// Export the theme store and other values
-export const theme = {
-	subscribe: () => stores.theme
-};
+		// Start auto-refresh after initial load
+		themeStore.startAutoRefresh();
 
-export const themeStore: EnhancedThemeStore = {
-	subscribe: stores.state.subscribe,
-	initialize: stores.initialize,
-	updateTheme: stores.updateTheme,
-	currentTheme: stores.state().currentTheme
-};
-
-export const hasTheme = {
-	subscribe: () => stores.hasTheme
-};
-
-export const themeName = {
-	subscribe: () => stores.themeName
-};
-
-export const isDefault = {
-	subscribe: () => stores.isDefault
-};
-
-export const isLoading = {
-	subscribe: () => stores.isLoading
-};
-
-export const error = {
-	subscribe: () => stores.error
-};
-
-// Export functions
-export const initializeThemeStore = stores.initialize;
-export const updateTheme = stores.updateTheme;
-export const clearError = stores.clearError;
-
-// Cleanup
-if (typeof window !== 'undefined') {
-	window.addEventListener('unload', stores.stopAutoRefresh);
-}
+		// Clean up auto-refresh on window unload
+		window.addEventListener('unload', () => themeStore.stopAutoRefresh());
+	}
+});

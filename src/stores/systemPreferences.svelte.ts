@@ -9,7 +9,7 @@
  * - TypeScript support with custom WidgetPreference type
  */
 
-import { store } from '@utils/reactivity.svelte';
+// We will rely on ScreenSize enum and not the 'store' utility
 import { ScreenSize } from '@stores/screenSizeStore.svelte';
 
 // Widget preference interface
@@ -37,173 +37,209 @@ export interface UserPreferences {
 	[ScreenSize.MD]: WidgetPreference[];
 	[ScreenSize.LG]: WidgetPreference[];
 	[ScreenSize.XL]: WidgetPreference[];
+	// Consider adding 2XL if your ScreenSize enum includes it and Tailwind uses it for widgets
+	// [ScreenSize.XXL]?: WidgetPreference[];
 }
 
-// State interface
-export interface PreferencesStoreState {
-	preferences: UserPreferences;
-	isLoading: boolean;
-	error: string | null;
-	currentUserId: string | null;
-}
+// Initial state for preferences (as a constant for reset)
+const DEFAULT_PREFERENCES: UserPreferences = {
+	[ScreenSize.SM]: [],
+	[ScreenSize.MD]: [],
+	[ScreenSize.LG]: [],
+	[ScreenSize.XL]: []
+	// [ScreenSize.XXL]: [], // Uncomment if XXL is added to ScreenSize enum and used
+};
 
-// Create base stores
-function createPreferencesStores() {
-	// Initial state
-	const initialState: PreferencesStoreState = {
-		preferences: {
-			[ScreenSize.SM]: [],
-			[ScreenSize.MD]: [],
-			[ScreenSize.LG]: [],
-			[ScreenSize.XL]: []
-		},
-		isLoading: false,
-		error: null,
-		currentUserId: null
-	};
+/**
+ * Manages user dashboard system preferences, including loading from and saving to a backend API.
+ * Utilizes Svelte 5 runes for reactive and efficient state management.
+ */
+class SystemPreferencesStore {
+	// Core reactive state properties using $state()
+	preferences = $state<UserPreferences>(DEFAULT_PREFERENCES);
+	isLoading = $state(false);
+	error = $state<string | null>(null);
+	currentUserId = $state<string | null>(null);
 
-	const state = store<PreferencesStoreState>(initialState);
-
-	// Derived values
-	const hasPreferences = $derived.by(() => {
-		return Object.values(state().preferences).some((widgets) => widgets.length > 0);
-	});
-
-	const widgetCount = $derived.by(() => {
-		return Object.values(state().preferences).reduce((sum, widgets) => sum + widgets.length, 0);
-	});
-
-	// Helper function to get widgets for a specific screen size
-	function getScreenSizeWidgets(size: ScreenSize): WidgetPreference[] {
-		return state().preferences[size];
+	constructor() {
+		// No specific initialization in the constructor, relies on methods to load preferences.
 	}
 
-	// Load preferences from server API and update store
-	async function loadPreferences(userId: string) {
-		state.update((s) => ({ ...s, isLoading: true, error: null, currentUserId: userId }));
+	// --- Derived State ($derived) ---
+
+	/**
+	 * True if there are any preferences configured across all screen sizes.
+	 */
+	get hasPreferences(): boolean {
+		return $derived(Object.values(this.preferences).some((widgets) => widgets.length > 0));
+	}
+
+	/**
+	 * The total count of all widgets configured across all screen sizes.
+	 */
+	get widgetCount(): number {
+		return $derived(Object.values(this.preferences).reduce((sum, widgets) => sum + widgets.length, 0));
+	}
+
+	// --- Public Methods to Mutate State and Interact with API ---
+
+	/**
+	 * Retrieves widgets for a specific screen size.
+	 * @param size The ScreenSize enum value.
+	 * @returns An array of WidgetPreference for the given screen size.
+	 */
+	getScreenSizeWidgets(size: ScreenSize): WidgetPreference[] {
+		// Directly access the reactive state. The caller will use $derived if they want reactivity.
+		// No need for a separate derived `store(() => ...)` here.
+		return this.preferences[size];
+	}
+
+	/**
+	 * Loads user preferences from the backend API.
+	 * Updates isLoading, error, and preferences states.
+	 * @param userId The ID of the current user.
+	 */
+	async loadPreferences(userId: string) {
+		this.isLoading = true;
+		this.error = null; // Clear previous errors
+		this.currentUserId = userId; // Update current user ID
+
 		try {
-			const res = await fetch('/api/systemPreferences', { method: 'GET' }); // Ensure your API endpoint matches
-			if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+			// Ensure API endpoint is correct and accessible
+			const res = await fetch('/api/systemPreferences', { method: 'GET' });
+			if (!res.ok) {
+				const errorBody = await res.text(); // Get text for more detailed error
+				throw new Error(`HTTP ${res.status} ${res.statusText}: ${errorBody}`);
+			}
 
 			const apiResponse = await res.json();
 			const loadedPrefs = apiResponse.preferences as UserPreferences;
 
-			state.update((s) => ({
-				...s,
-				preferences: loadedPrefs || initialState.preferences,
-				isLoading: false,
-				error: null,
-				currentUserId: userId
-			}));
+			// Update preferences, defaulting to empty if API returns null/undefined
+			this.preferences = loadedPrefs || DEFAULT_PREFERENCES;
+			this.error = null; // Clear any previous errors on success
 		} catch (e) {
-			state.update((s) => ({
-				...s,
-				isLoading: false,
-				error: e instanceof Error ? e.message : 'Failed to load preferences'
-			}));
+			this.error = e instanceof Error ? e.message : 'Failed to load preferences';
 			console.error('Failed to load preferences:', e);
+		} finally {
+			this.isLoading = false;
 		}
 	}
 
-	// Set preferences for a specific screen size (in-memory + persist to DB)
-	async function setPreference(userId: string, screenSizeValue: ScreenSize, widgets: WidgetPreference[]) {
-		state.update((s) => ({
-			...s,
-			preferences: { ...s.preferences, [screenSizeValue]: widgets },
-			currentUserId: userId
-		}));
-		// Persist to DB
+	/**
+	 * Sets the entire set of widgets for a specific screen size.
+	 * Updates the in-memory state and persists to the backend API.
+	 * @param userId The ID of the current user.
+	 * @param screenSizeValue The ScreenSize enum value for which to set preferences.
+	 * @param widgets An array of WidgetPreference to set.
+	 */
+	async setPreference(userId: string, screenSizeValue: ScreenSize, widgets: WidgetPreference[]) {
+		// Update in-memory state first for immediate UI feedback
+		this.preferences = { ...this.preferences, [screenSizeValue]: widgets };
+		this.currentUserId = userId; // Keep user ID in sync
+
+		// Persist to DB asynchronously
 		try {
-			await fetch('/api/systemPreferences', {
-				method: 'POST',
+			const res = await fetch('/api/systemPreferences', {
+				method: 'POST', // Use POST for saving the entire state
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ preferences: state().preferences })
+				body: JSON.stringify({ preferences: this.preferences }) // Send the complete current state
 			});
+			if (!res.ok) {
+				const errorBody = await res.text();
+				throw new Error(`HTTP ${res.status} ${res.statusText}: ${errorBody}`);
+			}
+			// Optionally, handle success response from API if needed
 		} catch (e) {
+			// Do not change isLoading/error state for non-critical background persistence errors
 			console.error('Failed to persist preferences:', e);
 		}
 	}
 
-	// Clear all preferences (in-memory + persist to DB)
-	async function clearPreferences(userId: string) {
-		const emptyPreferences: UserPreferences = {
-			[ScreenSize.SM]: [],
-			[ScreenSize.MD]: [],
-			[ScreenSize.LG]: [],
-			[ScreenSize.XL]: []
-		};
-		state.update((s) => ({
-			...s,
-			preferences: emptyPreferences,
-			currentUserId: userId
-		}));
-		// Persist to DB
+	/**
+	 * Clears all user preferences across all screen sizes.
+	 * Updates the in-memory state and persists the empty state to the backend API.
+	 * @param userId The ID of the current user.
+	 */
+	async clearPreferences(userId: string) {
+		// Update in-memory state to empty
+		this.preferences = DEFAULT_PREFERENCES;
+		this.currentUserId = userId;
+
+		// Persist cleared state to DB
 		try {
-			await fetch('/api/systemPreferences', {
+			const res = await fetch('/api/systemPreferences', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ preferences: emptyPreferences })
+				body: JSON.stringify({ preferences: DEFAULT_PREFERENCES })
 			});
+			if (!res.ok) {
+				const errorBody = await res.text();
+				throw new Error(`HTTP ${res.status} ${res.statusText}: ${errorBody}`);
+			}
 		} catch (e) {
 			console.error('Failed to persist cleared preferences:', e);
 		}
 	}
 
-	// Add a widget to preferences (in-memory only)
-	function addWidget(userId: string, screenSizeValue: ScreenSize, widget: WidgetPreference) {
-		state.update((s) => {
-			const updatedWidgets = [...s.preferences[screenSizeValue], widget];
-			return {
-				...s,
-				preferences: { ...s.preferences, [screenSizeValue]: updatedWidgets },
-				currentUserId: userId
-			};
-		});
+	/**
+	 * Adds a single widget to the preferences for a specific screen size.
+	 * @param userId The ID of the current user.
+	 * @param screenSizeValue The ScreenSize enum value.
+	 * @param widget The WidgetPreference to add.
+	 */
+	addWidget(userId: string, screenSizeValue: ScreenSize, widget: WidgetPreference) {
+		// Create a new array and new preferences object to ensure reactivity
+		const updatedWidgets = [...this.preferences[screenSizeValue], widget];
+		this.preferences = {
+			...this.preferences,
+			[screenSizeValue]: updatedWidgets
+		};
+		this.currentUserId = userId; // Keep user ID in sync
+		// Note: This does not automatically persist. Call setPreference after batching changes.
 	}
 
-	// Remove a widget from preferences (in-memory only)
-	function removeWidget(userId: string, screenSizeValue: ScreenSize, widgetId: string) {
-		state.update((s) => {
-			const updatedWidgets = s.preferences[screenSizeValue].filter((w) => w.id !== widgetId);
-			return {
-				...s,
-				preferences: { ...s.preferences, [screenSizeValue]: updatedWidgets },
-				currentUserId: userId
-			};
-		});
+	/**
+	 * Removes a single widget from the preferences for a specific screen size.
+	 * @param userId The ID of the current user.
+	 * @param screenSizeValue The ScreenSize enum value.
+	 * @param widgetId The ID of the widget to remove.
+	 */
+	removeWidget(userId: string, screenSizeValue: ScreenSize, widgetId: string) {
+		// Create a new array and new preferences object to ensure reactivity
+		const updatedWidgets = this.preferences[screenSizeValue].filter((w) => w.id !== widgetId);
+		this.preferences = {
+			...this.preferences,
+			[screenSizeValue]: updatedWidgets
+		};
+		this.currentUserId = userId; // Keep user ID in sync
+		// Note: This does not automatically persist. Call setPreference after batching changes.
 	}
 
-	return {
-		// Base store
-		state,
-		// Derived values
-		hasPreferences: () => hasPreferences,
-		widgetCount: () => widgetCount,
-		// Methods
-		getScreenSizeWidgets,
-		setPreference,
-		loadPreferences,
-		clearPreferences,
-		addWidget,
-		removeWidget
-	};
+	// --- Utility methods if needed, e.g., for clearing general store errors ---
+	clearError() {
+		this.error = null;
+	}
 }
 
-// Create and export stores
-const stores = createPreferencesStores();
+// --- Global Store Instance ---
+// Instantiate the single global system preferences store.
+export const systemPreferencesStore = new SystemPreferencesStore();
 
-// Export main store with full interface
-export const systemPreferences = {
-	subscribe: stores.state.subscribe,
-	setPreference: stores.setPreference,
-	loadPreferences: stores.loadPreferences,
-	clearPreferences: stores.clearPreferences,
-	addWidget: stores.addWidget,
-	removeWidget: stores.removeWidget
-};
-
-// Export derived values as functions that return the derived rune value
-export const hasPreferences = stores.hasPreferences(); // Call to get the rune value
-export const widgetCount = stores.widgetCount(); // Call to get the rune value
-// Export helper function
-export const getScreenSizeWidgets = stores.getScreenSizeWidgets;
+// --- Exported Aliases for Convenience ---
+// Components can import these directly for convenience, or use `systemPreferencesStore.property`
+export const {
+	preferences,
+	isLoading,
+	error,
+	currentUserId,
+	hasPreferences, // Derived getter
+	widgetCount, // Derived getter
+	getScreenSizeWidgets,
+	loadPreferences,
+	setPreference,
+	clearPreferences,
+	addWidget,
+	removeWidget,
+	clearError // Utility method
+} = systemPreferencesStore;

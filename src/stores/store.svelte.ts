@@ -10,13 +10,19 @@
  */
 
 import { publicEnv } from '@root/config/public';
-import { store } from '@utils/reactivity.svelte';
-
-// Paraglidejs
-import * as m from '@src/paraglide/messages';
 import { setLanguageTag, type AvailableLanguageTag } from '@src/paraglide/runtime';
+import * as m from '@src/paraglide/messages';
 
-// Define interfaces
+// Helper to get cookie value
+function getCookie(name: string): string | null {
+	if (typeof document === 'undefined') return null;
+	const value = `; ${document.cookie}`;
+	const parts = value.split(`; ${name}=`);
+	if (parts.length === 2) return parts.pop()?.split(';').shift() || null;
+	return null;
+}
+
+// Interfaces
 interface ValidationErrors {
 	[fieldName: string]: string | null;
 }
@@ -26,7 +32,6 @@ interface SaveFunction {
 	reset: () => void;
 }
 
-// Translation progress types
 export interface TranslationSet {
 	total: Set<string>;
 	translated: Set<string>;
@@ -38,202 +43,161 @@ export type TranslationProgress = {
 	show: boolean;
 };
 
-// Helper function to get cookie value
-function getCookie(name: string): string | null {
-	if (typeof document === 'undefined') return null;
-	const value = `; ${document.cookie}`;
-	const parts = value.split(`; ${name}=`);
-	if (parts.length === 2) return parts.pop()?.split(';').shift() || null;
-	return null;
-}
+// Initial language setup from cookies or environment defaults
+const initialSystemLanguage = (getCookie('systemLanguage') as AvailableLanguageTag | null) ?? publicEnv.DEFAULT_SYSTEM_LANGUAGE;
+const initialContentLanguage = (getCookie('contentLanguage') as AvailableLanguageTag | null) ?? publicEnv.DEFAULT_CONTENT_LANGUAGE;
 
-// Create base stores
-const createBaseStores = () => {
-	// Get initial values from cookies or use defaults
-	const initialSystemLanguage = (getCookie('systemLanguage') as AvailableLanguageTag | null) ?? publicEnv.DEFAULT_SYSTEM_LANGUAGE;
-	const initialContentLanguage = (getCookie('contentLanguage') as AvailableLanguageTag | null) ?? publicEnv.DEFAULT_CONTENT_LANGUAGE;
-
+/**
+ * Core Svelte store using Svelte 5 runes for enhanced reactivity.
+ * All state is managed directly with `$state` for optimal performance.
+ */
+class AppStore {
 	// Language and i18n
-	const systemLanguage = store<AvailableLanguageTag>(initialSystemLanguage as AvailableLanguageTag);
-	const contentLanguage = store<AvailableLanguageTag>(initialContentLanguage as AvailableLanguageTag);
-	const messages = store({ ...m });
+	systemLanguage = $state<AvailableLanguageTag>(initialSystemLanguage as AvailableLanguageTag);
+	contentLanguage = $state<AvailableLanguageTag>(initialContentLanguage as AvailableLanguageTag);
+	messages = $state({ ...m });
 
 	// Translation status
-	const translationStatus = store({});
-	const completionStatus = store(0);
-	const translationStatusOpen = store(false);
-
-	// Initialize translationProgress with guaranteed structure for all languages
-	const initialTranslationProgress: TranslationProgress = { show: false };
-	for (const lang of publicEnv.AVAILABLE_CONTENT_LANGUAGES as AvailableLanguageTag[]) {
-		initialTranslationProgress[lang] = {
-			total: new Set<string>(),
-			translated: new Set<string>()
-		};
-	}
-	const translationProgress = store<TranslationProgress>(initialTranslationProgress);
+	translationStatus = $state({});
+	completionStatus = $state(0);
+	translationStatusOpen = $state(false);
+	translationProgress = $state<TranslationProgress>(this.initializeTranslationProgress());
 
 	// UI state
-	const tabSet = store(0);
-	const headerActionButton = store<ConstructorOfATypedSvelteComponent | string | undefined>(undefined);
-	const headerActionButton2 = store<ConstructorOfATypedSvelteComponent | string | undefined>(undefined);
-	const pkgBgColor = store('variant-filled-primary');
-	const drawerExpanded = store(true);
-	const storeListboxValue = store('create');
+	tabSet = $state(0);
+	headerActionButton = $state<ConstructorOfATypedSvelteComponent | string | undefined>(undefined);
+	headerActionButton2 = $state<ConstructorOfATypedSvelteComponent | string | undefined>(undefined);
+	pkgBgColor = $state('variant-filled-primary');
+	drawerExpanded = $state(true);
+	storeListboxValue = $state('create');
 
 	// Loading state
-	const loadingProgress = store(0);
-	const isLoading = store(false);
+	loadingProgress = $state(0);
+	isLoading = $state(false);
 
 	// Image handling
-	const avatarSrc = store('/Default_User.svg');
-	const file = store<File | null>(null);
-	const saveEditedImage = store(false);
+	avatarSrc = $state('/Default_User.svg');
+	file = $state<File | null>(null);
+	saveEditedImage = $state(false);
 
 	// Save functionality
-	const saveFunction = store<SaveFunction>({
-		fn: () => {},
-		reset: () => {}
-	});
-	const saveLayerStore = store(async () => {});
-	const shouldShowNextButton = store(false);
+	saveFunction = $state<SaveFunction>({ fn: () => {}, reset: () => {} });
+	saveLayerStore = $state(async () => {});
+	shouldShowNextButton = $state(false);
 
-	// Validation
-	const validationErrors = store<ValidationErrors>({});
+	// Validation state
+	validationErrors: ValidationErrors = $state({});
 
-	// Use store subscriptions for cookie updates
-	systemLanguage.subscribe((sysLang) => {
-		if (typeof window !== 'undefined' && sysLang) {
-			document.cookie = `systemLanguage=${sysLang}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
-			setLanguageTag(sysLang);
-			messages.set({ ...m });
+	// FIX: Declare isValid directly as a $derived property, not inside a getter
+	isValid = $derived(Object.values(this.validationErrors).every((error) => !error));
+
+	constructor() {
+		// Reactions for language changes to update cookies and ParaglideJS
+		$effect(() => {
+			if (typeof window !== 'undefined' && this.systemLanguage) {
+				document.cookie = `systemLanguage=${this.systemLanguage}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
+				setLanguageTag(this.systemLanguage);
+				this.messages = { ...m }; // Re-assign to trigger reactivity
+			}
+		});
+
+		$effect(() => {
+			if (typeof window !== 'undefined' && this.contentLanguage) {
+				document.cookie = `contentLanguage=${this.contentLanguage}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
+				setLanguageTag(this.contentLanguage); // Potentially set content language for ParaglideJS too, if needed for client-side content rendering
+				this.messages = { ...m }; // Re-assign to trigger reactivity
+			}
+		});
+	}
+
+	// Method to initialize translation progress for all available languages
+	private initializeTranslationProgress(): TranslationProgress {
+		const initialProgress: TranslationProgress = { show: false };
+		for (const lang of publicEnv.AVAILABLE_CONTENT_LANGUAGES as AvailableLanguageTag[]) {
+			initialProgress[lang] = {
+				total: new Set<string>(),
+				translated: new Set<string>()
+			};
 		}
-	});
+		return initialProgress;
+	}
 
-	contentLanguage.subscribe((contentLang) => {
-		if (typeof window !== 'undefined' && contentLang) {
-			document.cookie = `contentLanguage=${contentLang}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
-			setLanguageTag(contentLang);
-			messages.set({ ...m });
+	// --- Validation Methods (fully integrated with $state) ---
+	setValidationError(fieldName: string, errorMessage: string | null) {
+		if (errorMessage) {
+			this.validationErrors = { ...this.validationErrors, [fieldName]: errorMessage };
+		} else {
+			const newErrors = { ...this.validationErrors };
+			delete newErrors[fieldName];
+			this.validationErrors = newErrors;
 		}
-	});
+	}
 
-	return {
-		// Language and i18n
-		systemLanguage,
-		contentLanguage,
-		messages,
+	clearError(fieldName: string) {
+		const newErrors = { ...this.validationErrors };
+		delete newErrors[fieldName];
+		this.validationErrors = newErrors;
+	}
 
-		// Translation status
-		translationStatus,
-		completionStatus,
-		translationStatusOpen,
-		translationProgress,
+	clearAllValidationErrors() {
+		this.validationErrors = {};
+	}
 
-		// UI state
-		tabSet,
-		headerActionButton,
-		headerActionButton2,
-		pkgBgColor,
-		drawerExpanded,
-		storeListboxValue,
+	getError(fieldName: string): string | null {
+		return this.validationErrors[fieldName] || null;
+	}
 
-		// Loading state
-		loadingProgress,
-		isLoading,
+	hasError(fieldName: string): boolean {
+		return !!this.validationErrors[fieldName];
+	}
 
-		// Image handling
-		avatarSrc,
-		file,
-		saveEditedImage,
+	// --- Translation Progress Methods (fully integrated with $state) ---
+	updateTranslationFieldStatus(
+		fieldName: string,
+		language: AvailableLanguageTag,
+		isTranslated: boolean,
+		isTranslatable: boolean
+	) {
+		// Ensure the language entry exists
+		if (!this.translationProgress[language]) {
+			this.translationProgress[language] = { total: new Set(), translated: new Set() };
+		}
 
-		// Save functionality
-		saveFunction,
-		saveLayerStore,
-		shouldShowNextButton,
+		const langProgress = this.translationProgress[language]!; // Non-null assertion after check
 
-		// Validation
-		validationErrors
-	};
-};
+		if (isTranslatable) {
+			langProgress.total.add(fieldName); // Always add to total if translatable
+		} else {
+			langProgress.total.delete(fieldName); // Remove if no longer translatable
+		}
 
-// Create and export stores
-const stores = createBaseStores();
+		if (isTranslated) {
+			langProgress.translated.add(fieldName);
+		} else {
+			langProgress.translated.delete(fieldName);
+		}
 
-// Export individual stores
-export const {
-	systemLanguage,
-	contentLanguage,
-	messages,
-	translationStatus,
-	completionStatus,
-	translationStatusOpen,
-	translationProgress,
-	tabSet,
-	headerActionButton,
-	headerActionButton2,
-	pkgBgColor,
-	drawerExpanded,
-	storeListboxValue,
-	loadingProgress,
-	isLoading,
-	avatarSrc,
-	file,
-	saveEditedImage,
-	saveFunction,
-	saveLayerStore,
-	shouldShowNextButton,
-	validationErrors
-} = stores;
+		// Recalculate 'show' based on current state
+		let totalFields = 0;
+		for (const lang of publicEnv.AVAILABLE_CONTENT_LANGUAGES as AvailableLanguageTag[]) {
+			if (this.translationProgress[lang]?.total) {
+				totalFields += this.translationProgress[lang]!.total.size;
+			}
+		}
+		this.translationProgress.show = totalFields > 0;
+
+		// Re-assign translationProgress to trigger reactivity for the whole object
+		// This is important because modifying Sets directly doesn't trigger reactivity
+		// by changing the object reference. A shallow copy ensures Svelte detects the change.
+		this.translationProgress = { ...this.translationProgress };
+	}
+}
+
+// Instantiate the single global store
+export const appStore = new AppStore();
 
 // Export table headers constant
 export const tableHeaders = ['id', 'email', 'username', 'role', 'createdAt'] as const;
 
-// Export indexer
+// Export indexer (consider if this is still needed or can be integrated)
 export const indexer = undefined;
-
-/**
- * Creates a reactive validation store using Svelte 5 runes.
- * This store manages validation errors and provides derived state for validity.
- */
-function createValidationStore() {
-	let errors = $state<ValidationErrors>({});
-
-	// Derived state that automatically recalculates when `errors` changes.
-	const isValid = $derived(Object.values(errors).every((error) => !error));
-
-	return {
-		// Expose reactive state directly
-		get errors() {
-			return errors;
-		},
-		get isValid() {
-			return isValid;
-		},
-
-		// Methods to manipulate the state
-		setError: (fieldName: string, errorMessage: string | null) => {
-			errors[fieldName] = errorMessage;
-		},
-
-		clearError: (fieldName: string) => {
-			if (fieldName in errors) {
-				delete errors[fieldName];
-			}
-		},
-
-		clearAllErrors: () => {
-			errors = {};
-		},
-
-		getError: (fieldName: string): string | null => {
-			return errors[fieldName] || null;
-		},
-
-		hasError: (fieldName: string): boolean => {
-			return !!errors[fieldName];
-		}
-	};
-}
-
-export const validationStore = createValidationStore();

@@ -19,6 +19,7 @@
 
 <script lang="ts">
 	import { publicEnv } from '@root/config/public';
+	// Use Svelte 5 rune access for stores
 	import { contentLanguage, translationProgress } from '@stores/store.svelte';
 	import { mode } from '@src/stores/collectionStore.svelte';
 	import { ProgressBar } from '@skeletonlabs/skeleton';
@@ -31,45 +32,29 @@
 
 	// Local state management with runes
 	let isOpen = $state(false);
-	let completionTotals = $state({ total: 0, translated: 0 });
+	// `completionTotals` should be derived from `translationProgress` for ultimate reactivity.
+	// let completionTotals = $state({ total: 0, translated: 0 }); // Removed, now derived
 
-	// Animation stores
-	const dropdownOpacity = tweened(0, {
-		duration: 200,
-		easing: cubicOut
-	});
+	// Animation stores - these still use `tweened` which is fine.
+	const dropdownOpacity = tweened(0, { duration: 200, easing: cubicOut });
+	const dropdownScale = tweened(0.95, { duration: 200, easing: cubicOut });
+	const progressValue = tweened(0, { duration: 800, easing: quintOut });
+	const chevronRotation = tweened(0, { duration: 200, easing: cubicOut });
 
-	const dropdownScale = tweened(0.95, {
-		duration: 200,
-		easing: cubicOut
-	});
+	// Store individual language progress tweens in a reactive map/object.
+	const languageProgressTweens = $state<Record<string, ReturnType<typeof tweened>>>({});
 
-	const progressValue = tweened(0, {
-		duration: 800,
-		easing: quintOut
-	});
-
-	const chevronRotation = tweened(0, {
-		duration: 200,
-		easing: cubicOut
-	});
-
-	// Store individual language progress values for smooth transitions
-	const languageProgressValues = $state<Record<string, any>>({});
-
-	// Initialize progress tweens for each language
-	function initializeLanguageProgress() {
+	// Initialize progress tweens for each language on component mount and when languages might change
+	$effect(() => {
 		for (const lang of publicEnv.AVAILABLE_CONTENT_LANGUAGES) {
-			if (!languageProgressValues[lang]) {
-				languageProgressValues[lang] = tweened(0, {
-					duration: 600,
-					easing: quintOut
-				});
+			if (!languageProgressTweens[lang]) {
+				// Initialize a tweened store for each language's progress
+				languageProgressTweens[lang] = tweened(0, { duration: 600, easing: quintOut });
 			}
 		}
-	}
+	});
 
-	// Animate dropdown visibility
+	// Animate dropdown visibility using an $effect.
 	$effect(() => {
 		if (isOpen) {
 			dropdownOpacity.set(1);
@@ -82,45 +67,40 @@
 		}
 	});
 
-	// Calculate completion totals when translation progress changes
-	$effect(() => {
-		const progress = translationProgress();
-		if (progress.show) {
-			let total = 0;
-			let translated = 0;
-			for (const lang of publicEnv.AVAILABLE_CONTENT_LANGUAGES) {
-				const langProgress = progress[lang as AvailableLanguageTag];
-				if (!langProgress) continue;
+	// Derived state for overall completion totals and individual language progress.
+	let calculatedCompletion = $derived.by(() => {
+		const progress = translationProgress.get(); // Get the current value of the store
+		let total = 0;
+		let translated = 0;
+		for (const lang of publicEnv.AVAILABLE_CONTENT_LANGUAGES) {
+			const langProgress = progress[lang as AvailableLanguageTag];
+			if (langProgress) {
 				translated += langProgress.translated.size;
 				total += langProgress.total.size;
-			}
-			completionTotals = { total, translated };
 
-			// Update overall progress animation
-			const newPercentage = total > 0 ? Math.round((translated / total) * 100) : 0;
-			progressValue.set(newPercentage);
-
-			// Initialize and update individual language progress
-			initializeLanguageProgress();
-			for (const lang of publicEnv.AVAILABLE_CONTENT_LANGUAGES) {
-				const langProgress = progress[lang as AvailableLanguageTag];
-				const percentage =
-					langProgress && langProgress.total.size > 0 ? Math.round((langProgress.translated.size / langProgress.total.size) * 100) : 0;
-				languageProgressValues[lang]?.set(percentage);
+				// Update individual language progress tweens
+				if (languageProgressTweens[lang]) {
+					const percentage =
+						langProgress.total.size > 0 ? Math.round((langProgress.translated.size / langProgress.total.size) * 100) : 0;
+					languageProgressTweens[lang].set(percentage);
+				}
 			}
-		} else {
-			completionTotals = { total: 0, translated: 0 };
-			progressValue.set(0);
 		}
+
+		// Update overall progress animation
+		const overallPercentage = total > 0 ? Math.round((translated / total) * 100) : 0;
+		progressValue.set(overallPercentage);
+
+		return { total, translated, overallPercentage };
 	});
 
-	// Derived completion status
-	let completionStatus = $derived(completionTotals.total > 0 ? Math.round((completionTotals.translated / completionTotals.total) * 100) : 0);
+	// Derived completion status (percentage) from `calculatedCompletion`
+	let completionStatus = $derived(calculatedCompletion.overallPercentage);
 
 	// Simplified language change handler with animation feedback
 	function handleLanguageChange(selectedLanguage: AvailableLanguageTag) {
-		contentLanguage.set(selectedLanguage);
-		isOpen = false;
+		contentLanguage.set(selectedLanguage); // Update the global content language store
+		isOpen = false; // Close dropdown after selection
 
 		// Add subtle feedback animation
 		chevronRotation.set(-10);
@@ -137,21 +117,13 @@
 		return 'bg-error-500';
 	}
 
-	function getLanguageProgress(lang: AvailableLanguageTag): number {
-		const progress = translationProgress();
-		const langProgress = progress[lang];
-		if (!langProgress || langProgress.total.size === 0) return 0;
-		return Math.round((langProgress.translated.size / langProgress.total.size) * 100);
-	}
-
-	// Get animated progress value for a language
+	// Function to get the animated progress value for a specific language
 	function getAnimatedLanguageProgress(lang: string): number {
-		return languageProgressValues[lang] ? languageProgressValues[lang].get() : 0;
+		return languageProgressTweens[lang] ? languageProgressTweens[lang].get() : 0;
 	}
 </script>
 
 {#if mode.value === 'view'}
-	<!-- Language selection -->
 	<select
 		class="select w-full max-w-[70px] transition-all duration-200 hover:scale-105 focus:scale-105 focus:shadow-lg"
 		value={contentLanguage.value}
@@ -163,7 +135,6 @@
 	</select>
 {:else}
 	<div class="relative mt-1 inline-block text-left">
-		<!-- Button and Overall Progress -->
 		<div class="transition-all duration-200 hover:scale-[1.02]">
 			<button
 				type="button"
@@ -182,7 +153,6 @@
 				></iconify-icon>
 			</button>
 
-			<!-- Translation Progress with smooth animation -->
 			<div class="mt-0.5 transition-all duration-300">
 				<ProgressBar
 					class="variant-outline-secondary transition-all duration-300 hover:shadow-sm"
@@ -193,11 +163,10 @@
 			</div>
 		</div>
 
-		<!-- Dropdown Language Status -->
 		{#if isOpen}
 			<div
 				id="translation-menu"
-				class="{translationProgress().show
+				class="{translationProgress.get().show // Access store value with .get()
 					? 'w-64'
 					: ''} absolute right-0 z-10 mt-1 origin-top-right divide-y divide-surface-200 rounded-md border border-surface-300 bg-surface-100 py-1 shadow-xl ring-1 ring-black ring-opacity-5 backdrop-blur-sm focus:outline-none dark:divide-surface-400 dark:bg-surface-800"
 				role="menu"
@@ -205,12 +174,11 @@
 				aria-labelledby="options-menu"
 				style="opacity: {$dropdownOpacity}; transform: scale({$dropdownScale}); transform-origin: top right;"
 			>
-				<!-- Language Items -->
 				<div role="none" class="divide-y divide-surface-200 dark:divide-surface-400">
 					{#each publicEnv.AVAILABLE_CONTENT_LANGUAGES as lang, index (lang)}
 						<button
 							role="menuitem"
-							class="{translationProgress().show
+							class="{translationProgress.get()[lang as AvailableLanguageTag] // Access store value with .get()
 								? 'justify-between'
 								: 'justify-center'} active:scale-98 flex w-full items-center gap-3 px-4 py-2 text-left text-sm transition-all duration-200 hover:scale-[1.02] hover:bg-surface-300 dark:hover:bg-surface-600"
 							onclick={() => handleLanguageChange(lang as AvailableLanguageTag)}
@@ -218,13 +186,11 @@
 							style="animation-delay: {index * 50}ms;"
 						>
 							<div class="flex w-full items-center justify-between gap-1">
-								<!-- Language -->
 								<span class="font-medium transition-colors duration-200 hover:text-primary-500">
 									{lang.toUpperCase()}
 								</span>
 
-								<!-- Progress Bar and Percentage -->
-								{#if translationProgress()[lang as AvailableLanguageTag]}
+								{#if translationProgress.get()[lang as AvailableLanguageTag]}
 									<div class="ml-2 flex flex-1 items-center gap-2">
 										<div class="flex-1">
 											<ProgressBar
@@ -243,7 +209,6 @@
 					{/each}
 				</div>
 
-				<!-- Overall Completion -->
 				<div class="dark:bg-surface-750 bg-surface-50 px-4 py-3" role="none">
 					<div class="mb-2 text-center text-xs font-medium text-surface-600 dark:text-surface-400">
 						{m.translationsstatus_completed()}

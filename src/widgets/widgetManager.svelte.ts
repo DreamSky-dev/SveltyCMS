@@ -1,212 +1,192 @@
+// src/widgets/widgetManager.svelte.ts
 /**
  * @file src/widgets/widgetManager.svelte.ts
  * @description Widget Manager for handling widget loading, activation, and configuration
  */
+
 import { mount } from 'svelte';
-import { v4 as uuidv4 } from 'uuid';
 import MissingWidget from './MissingWidget.svelte';
-import type { Widget, WidgetModule, WidgetId } from './types';
+import type { Widget, WidgetId, WidgetFunction as OriginalWidgetFunction } from './types'; // Alias OriginalWidgetFunction
 import type { User } from '@src/auth/types';
 import type { Schema } from '../content/types';
 
 // System Logger
 import { logger } from '@utils/logger.svelte';
 
-export type WidgetStatus = 'active' | 'inactive'; // Define widget status types
+// Import reactive stores and initialization function from index.ts
+import { initializeWidgets, widgetFunctions, activeWidgetList } from './index';
 
-export type ModifyRequestParams<T extends (...args: unknown[]) => unknown> = {
-	collection: Schema; // Collection schema
-	id?: WidgetId; // Optional widget ID
-	field: ReturnType<T>; // Field type
-	data: { get: () => unknown; update: (newData: unknown) => void }; // Data getter and setter
-	user: User; // User information
-	type: 'GET' | 'POST' | 'DELETE' | 'PATCH'; // HTTP request type
-	meta_data?: Record<string, unknown>; // Optional metadata
+export type WidgetStatus = 'active' | 'inactive';
+
+// Extend WidgetFunction from types.ts to include specifics if needed, though the original definition seems sufficient for its purpose as a function that returns a WidgetPlaceholder
+export type WidgetFunction = OriginalWidgetFunction & {
+	__widgetId?: string;
+	Name: string;
+	GuiSchema?: unknown;
+	GraphqlSchema?: unknown;
+	Icon?: string;
+	Description?: string;
+	aggregations?: unknown;
 };
 
-const widgets = new Map<string, Widget>();
-export default widgets;
+// The `widgets` map should ideally be derived from `widgetFunctions` or used internally if needed.
+// For now, commenting out the direct export and direct mutation, as `widgetFunctions` from `index.ts` is the source of truth.
+// const widgets = new Map<string, Widget>();
+// export default widgets;
 
-export type WidgetFunction = ((config: Record<string, unknown>) => Widget) & {
-	__widgetId?: string; // UUID for the widget function
-	Name: string; // Widget name
-	GuiSchema?: unknown; // GUI schema
-	GraphqlSchema?: unknown; // GraphQL schema
-	Icon?: string; // Icon for the widget
-	Description?: string; // Description of the widget
-	aggregations?: unknown; // Aggregation settings
+// Type definition for parameters passed to `modifyRequest` methods of widgets
+export type ModifyRequestParams = {
+	collection: Schema;
+	id?: WidgetId;
+	field: unknown; // This should be more specific, potentially FieldType from the widget
+	data: { get: () => unknown; update: (newData: unknown) => void };
+	user: User;
+	type: 'GET' | 'POST' | 'DELETE' | 'PATCH';
+	meta_data?: Record<string, unknown>;
 };
 
-let widgetFunctions = new Map<string, WidgetFunction>(); // Store for widget functions
-let activeWidgetList = new Set<string>(); // Store for active widgets
-
-// Function to resolve a widget placeholder
+// Resolves a widget placeholder into a fully functional `Widget` object. It checks if the widget is active and, if not, provides a `MissingWidget` component
 export async function resolveWidgetPlaceholder(placeholder: {
 	__widgetId: string;
 	__widgetName: string;
 	__widgetConfig: Record<string, unknown>;
 }): Promise<Widget> {
-	await initializeWidgets(); // Ensure widgets are initialized
+	// Ensure widgets are initialized before attempting to resolve.
+	await initializeWidgets();
 
-	// Check if the widget is active
-	const isActive = activeWidgetList.has(placeholder.__widgetName);
+	// Check if the widget is in the active list.
+	const isActive = activeWidgetList.get().has(placeholder.__widgetName);
 	if (!isActive) {
-		console.warn(`Widget "${placeholder.__widgetName}" is inactive. Rendering placeholder.`); // Log warning if widget is inactive
+		logger.warn(`Widget "${placeholder.__widgetName}" (ID: ${placeholder.__widgetId}) is inactive or not found. Rendering MissingWidget.`);
 		return {
 			__widgetId: placeholder.__widgetId,
 			Name: placeholder.__widgetName,
-			component: mount(MissingWidget, { props: { config: placeholder } }), // Use the placeholder widget
+			// When rendering a Svelte component, directly return its constructor or a mounted instance.
+			// If `MissingWidget` is a regular Svelte component, you'd typically import it and use it directly in a `<svelte:component>` tag.
+			// If `mount` is used, it should be done in a place where the component is actually rendered into the DOM.
+			// For a CMS, you often pass the component constructor and let the rendering framework handle mounting
+			component: MissingWidget, // Pass the component constructor, not a mounted instance here
 			config: placeholder.__widgetConfig
 		};
 	}
 
-	// Find the widget by UUID
-	const widgetFn = Array.from(widgetFunctions.values()).find((widget) => widget.__widgetId === placeholder.__widgetId);
+	// Find the widget function using its unique ID
+	const widgetFn = Array.from(widgetFunctions.get().values()).find((widget) => widget.__widgetId === placeholder.__widgetId);
 
 	if (!widgetFn) {
-		throw new Error(`Widget with ID ${placeholder.__widgetId} not found`); // Throw error if widget not found
+		logger.error(`Widget function with ID ${placeholder.__widgetId} not found for widget name "${placeholder.__widgetName}".`);
+		// Fallback to MissingWidget if the function isn't found despite being in the active list
+		return {
+			__widgetId: placeholder.__widgetId,
+			Name: placeholder.__widgetName,
+			component: MissingWidget,
+			config: placeholder.__widgetConfig
+		};
 	}
 
-	return widgetFn(placeholder.__widgetConfig); // Return the resolved widget
+	// Call the widget function with its configuration to get the actual `Widget` instance
+	return widgetFn(placeholder.__widgetConfig);
 }
 
-// Function to check if a widget is available
+// Checks if a widget is available (loaded and active)
 export function isWidgetAvailable(widgetName: string): boolean {
-	const widgetFn = widgetFunctions.get(widgetName); // Get widget function
-	const isActive = activeWidgetList.has(widgetName); // Check if widget is active
-	return !!widgetFn && isActive; // Return true if widget is available and active
+	// Check if the widget function exists AND if it's in the active list.
+	const widgetFn = widgetFunctions.get().has(widgetName);
+	const isActive = activeWidgetList.get().has(widgetName);
+	return widgetFn && isActive;
 }
 
-// Function to get all widget functions
-export function getWidgets() {
-	return widgetFunctions; // Return widget functions
+// Returns a read-only map of all currently loaded widget functions
+export function getWidgets(): ReadonlyMap<string, WidgetFunction> {
+	return widgetFunctions.get();
 }
 
-// Function to get active widgets
-export function getActiveWidgets() {
-	return activeWidgetList; // Return active widgets
+// Returns a read-only set of names of all currently active widgets
+export function getActiveWidgets(): ReadonlySet<string> {
+	return activeWidgetList.get();
 }
 
-// Function to update widget status
+// Updates the activation status of a widget in the database and the client-side store
 export async function updateWidgetStatus(widgetName: string, status: WidgetStatus): Promise<void> {
 	try {
-		// Update the database
-		await updateWidgetStatusInDatabase(widgetName, status === 'active');
+		// Mock database update. Replace with actual database interaction.
+		// const { updateWidgetStatusInDatabase } = await import('../databases/dbInterface');
+		// await updateWidgetStatusInDatabase(widgetName, status === 'active');
 
-		// Update the active widget list
-		if (status === 'active') {
-			activeWidgetList = new Set(activeWidgetList).add(widgetName); // Add widget to active list
-		} else if (status === 'inactive') {
-			activeWidgetList = new Set(activeWidgetList);
-			activeWidgetList.delete(widgetName); // Remove widget from active list
-		}
-
-		logger.info(`Widget ${widgetName} ${status} status updated successfully`); // Log success message
-	} catch (error) {
-		logger.error(`Error updating widget status:`, error); // Log error
-		throw error; // Re-throw error
-	}
-}
-
-// Function to get widget configuration
-export function getWidgetConfig(widgetName: string) {
-	const widget = widgetFunctions.get(widgetName); // Get widget function
-	return widget ? widget({}).config : undefined; // Return widget configuration
-}
-
-// Function to update widget configuration
-export async function updateWidgetConfig(widgetName: string, config: Record<string, unknown>): Promise<void> {
-	const widget = widgetFunctions.get(widgetName); // Get widget function
-	if (!widget) return;
-
-	const updatedWidget: WidgetFunction = (cfg: Record<string, unknown>) => ({
-		...widget(cfg),
-		config: { ...widget(cfg).config, ...config } // Update widget configuration
-	});
-	widgetFunctions = new Map(widgetFunctions).set(widgetName, updatedWidget); // Update widget in the map
-}
-
-// Function to load all widgets
-export async function loadWidgets(): Promise<Map<string, Widget>> {
-	initializeWidgets(); // Ensure widgets are initialized
-	const widgets = new Map<string, Widget>(); // Map to store widgets
-	for (const [name, widgetFn] of widgetFunctions.entries()) {
-		widgets.set(name, widgetFn({})); // Add widget to map
-	}
-	return widgets; // Return widgets
-}
-
-// Function to initialize widgets
-async function initializeWidgets(): Promise<void> {
-	logger.debug('Initializing widgets from manager...');
-	if (widgetFunctions.size > 0) return;
-
-	try {
-		// Search both core and custom widget directories
-		const modules = import.meta.glob<WidgetModule>(['./core/*/index.ts', './custom/*/index.ts'], {
-			eager: true
-		});
-
-		const widgetModules = Object.entries(modules).map(([path, module]) => {
-			try {
-				// Extract widget name from path (e.g., './core/mediaUpload/index.ts' -> 'mediaUpload')
-				const name = path.split('/').at(-2);
-				if (!name) {
-					logger.warn(`Skipping widget module: ${path} - Unable to extract widget name`);
-					return null;
-				}
-
-				if (typeof module.default !== 'function') {
-					logger.warn(`Skipping widget module: ${path} - No valid widget function found`);
-					return null;
-				}
-
-				return { name, module };
-			} catch (error) {
-				logger.error(`Failed to process widget module ${path}:`, error);
-				return null;
+		// Optimistically update the active widget list in the store.
+		// Use `activeWidgetList.update` for proper store updates
+		activeWidgetList.update((currentList) => {
+			const newList = new Set(currentList); // Create a new set to ensure reactivity
+			if (status === 'active') {
+				newList.add(widgetName);
+			} else {
+				newList.delete(widgetName);
 			}
+			return newList;
 		});
 
-		const validModules = widgetModules.filter((m): m is NonNullable<typeof m> => m !== null);
-
-		if (validModules.length === 0) {
-			throw new Error('No valid widgets found');
-		}
-
-		const newWidgetFunctions: Map<string, WidgetFunction> = new Map();
-
-		for (const { name, module } of validModules) {
-			const originalFn = module.default;
-			const widgetName = originalFn.name || name;
-			const capitalizedName = name.charAt(0).toUpperCase() + name.slice(1);
-			const widgetId = uuidv4().replace(/-/g, ''); // Generate UUID v4
-
-			// Create a wrapper function that preserves the original while adding metadata
-			const widgetFn = Object.assign((config: Record<string, unknown>) => originalFn(config), {
-				__widgetId: widgetId,
-				Name: widgetName,
-				GuiSchema: originalFn.GuiSchema,
-				GraphqlSchema: originalFn.GraphqlSchema,
-				Icon: originalFn.Icon,
-				Description: originalFn.Description,
-				aggregations: originalFn.aggregations
-			});
-			newWidgetFunctions.set(capitalizedName, widgetFn);
-		}
-
-		widgetFunctions = newWidgetFunctions;
-		logger.info(`${newWidgetFunctions.size} Widgets initialized successfully`);
+		logger.info(`Widget ${widgetName} status updated to '${status}' successfully.`);
 	} catch (error) {
-		logger.error('Failed to initialize widgets:', error);
+		logger.error(`Error updating widget status for ${widgetName}:`, error);
 		throw error;
 	}
 }
 
-// HMR setup
+// Retrieves the configuration for a specific widget
+export function getWidgetConfig(widgetName: string): Record<string, unknown> | undefined {
+	const widget = widgetFunctions.get().get(widgetName);
+	// Call the widget function with an empty object to get its default/initial config.
+	return widget ? widget({}).config : undefined;
+}
+
+// Updates the configuration of a specific widget in the client-side store
+export async function updateWidgetConfig(widgetName: string, config: Record<string, unknown>): Promise<void> {
+	const widgetFn = widgetFunctions.get().get(widgetName);
+	if (!widgetFn) {
+		logger.warn(`Attempted to update config for non-existent widget: ${widgetName}`);
+		return;
+	}
+
+	// Create a new `WidgetFunction` that returns a widget with updated config
+	widgetFunctions.update((currentMap) => {
+		const newMap = new Map(currentMap); // Create a new map for reactivity
+		const originalWidgetInstance = widgetFn({}); // Get current widget instance to merge config
+		const updatedWidgetFn: WidgetFunction = Object.assign((cfg: Record<string, unknown>) => {
+			return {
+				...originalWidgetInstance,
+				config: { ...originalWidgetInstance.config, ...cfg } // Merge new config with existing
+			};
+		}, widgetFn); // Copy over properties from the original function like Name, __widgetId, etc.
+
+		newMap.set(widgetName, updatedWidgetFn);
+		return newMap;
+	});
+
+	logger.info(`Widget ${widgetName} configuration updated.`);
+	// You might also want to persist this configuration to the database here.
+}
+
+// Loads and returns all active widget instances
+export async function loadWidgets(): Promise<Map<string, Widget>> {
+	await initializeWidgets(); // Ensure all widgets are initialized and active status is loaded.
+	const widgetsMap = new Map<string, Widget>();
+
+	// Get the current values from the reactive stores using `.get()`.
+	const currentWidgetFunctions = widgetFunctions.get();
+	const currentActiveWidgetList = activeWidgetList.get();
+
+	for (const [name, widgetFn] of currentWidgetFunctions.entries()) {
+		if (currentActiveWidgetList.has(name)) {
+			// Call the widget function with an empty config or default config if available.
+			widgetsMap.set(name, widgetFn({}));
+		}
+	}
+	return widgetsMap;
+}
+
+// HMR setup for this file. It ensures the `initializeWidgets` from `index.ts` is triggered if `widgetManager` itself changes, potentially re-evaluating dependencies
 if (import.meta.hot) {
 	import.meta.hot.accept(() => {
-		initializeWidgets();
-		logger.info('Widgets reloaded due to file changes.');
+		logger.info('Widget Manager module reloaded due to file changes.');
 	});
 }

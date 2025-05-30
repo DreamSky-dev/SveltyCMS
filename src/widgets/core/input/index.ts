@@ -1,43 +1,36 @@
 /**
-@file src/widgets/core/input/index.ts
-@description - Input index file.
+ * @file src/widgets/core/input/index.ts
+ * @description - Input index file.
  */
+
 import { publicEnv } from '@root/config/public';
 import { getFieldName, getGuiFields } from '@utils/utils';
 import { GuiSchema, GraphqlSchema, type Params } from './types';
-//ParaglideJS
+// ParaglideJS messages
 import * as m from '@src/paraglide/messages';
+import type { WidgetPlaceholder, WidgetFunction } from '../../types'; // Import necessary types
+import type { Aggregations } from '@src/content/types'; // Assuming Aggregations type exists
 
 const WIDGET_NAME = 'Input' as const;
 
-/**
- * Defines widget Parameters
- */
-const widget = (params: Params & { widgetId?: string }) => {
-	// Define the display function
-	let display: unknown;
+// Defines the Input widget's behavior and structure
+const widget = (params: Params): WidgetPlaceholder & Omit<Params, 'widget'> => {
+	let display: ((args: { data: Record<string, string>; contentLanguage: string }) => string) | ((args: { data: unknown; contentLanguage: string }) => Promise<string>);
+
 	if (!params.display) {
-		display = async ({ data, contentLanguage }) => {
-			// console.log(data);
-			data = data ? data : {}; // Ensure data is not undefined
-			// Return the data for the default content language or a message indicating no data entry
-			return params.translated ? data[contentLanguage] || m.widgets_nodata() : data[publicEnv.DEFAULT_CONTENT_LANGUAGE] || m.widgets_nodata();
+		// Default display function if not provided in params.
+		display = ({ data, contentLanguage }) => {
+			const value = data ? (data as Record<string, string>)[contentLanguage] : '';
+			return params.translated ? value || m.widgets_nodata() : (data as Record<string, string>)?.[publicEnv.DEFAULT_CONTENT_LANGUAGE] || m.widgets_nodata();
 		};
-		display.default = true;
+		// Mark it as default for potential later checks.
+		(display as any).default = true;
 	} else {
-		display = params.display;
+		display = params.display as any; // Cast to any because `Params` display type is too broad
 	}
 
-	// Define the widget object
-	const widget = {
-		widgetId: params.widgetId,
-		Name: WIDGET_NAME,
-		GuiFields: getGuiFields(params, GuiSchema)
-	};
-
-	// Define the field object
+	// Define the field object which combines widget-specific properties with common field properties
 	const field = {
-		// default fields
 		display,
 		label: params.label,
 		db_fieldName: params.db_fieldName,
@@ -46,11 +39,7 @@ const widget = (params: Params & { widgetId?: string }) => {
 		icon: params.icon,
 		width: params.width,
 		helper: params.helper,
-
-		// permissions
 		permissions: params.permissions,
-
-		// widget specific
 		placeholder: params.placeholder,
 		count: params.count,
 		minlength: params.minlength,
@@ -61,24 +50,27 @@ const widget = (params: Params & { widgetId?: string }) => {
 		disabled: params.disabled
 	};
 
-	// Return the field and widget objects
-	return { ...field, widget };
+	// Return a `WidgetPlaceholder` combined with the field properties.
+	// The `__widgetId` and `__widgetName` will be set by the `createWidgetFunction` in `index.ts`.
+	return {
+		__widgetId: params.widgetId || '', // This will be overwritten by `uuidv4` in `initializeWidgets`
+		__widgetName: WIDGET_NAME,
+		__widgetConfig: field, // The configuration for the widget instance
+		...field // Spread field properties directly for easy access
+	};
 };
 
-// Assign Name, GuiSchema and GraphqlSchema to the widget function
-widget.Name = WIDGET_NAME;
-widget.GuiSchema = GuiSchema;
-widget.GraphqlSchema = GraphqlSchema;
-widget.toString = () => '';
+// Assign static properties to the widget function for global access and metadata
+(widget as WidgetFunction).Name = WIDGET_NAME;
+(widget as WidgetFunction).GuiSchema = GuiSchema;
+(widget as WidgetFunction).GraphqlSchema = GraphqlSchema;
+(widget as WidgetFunction).Icon = 'icon-park-outline:text';
+(widget as WidgetFunction).Description = m.widget_text_description();
 
-// Widget icon and helper text
-widget.Icon = 'icon-park-outline:text';
-widget.Description = m.widget_text_description();
-
-// Widget Aggregations:
-widget.aggregations = {
+// Widget Aggregations for filtering and sorting data
+(widget as WidgetFunction).aggregations = {
 	filters: async (info) => {
-		const field = info.field as ReturnType<typeof widget>;
+		const field = info.field as FieldType; // Cast to FieldType for correct property access
 		return [
 			{
 				$match: {
@@ -88,12 +80,12 @@ widget.aggregations = {
 		];
 	},
 	sorts: async (info) => {
-		const field = info.field as ReturnType<typeof widget>;
+		const field = info.field as FieldType; // Cast to FieldType
 		const fieldName = getFieldName(field);
 		return [{ $sort: { [`${fieldName}.${info.contentLanguage}`]: info.sort } }];
 	}
-} as Aggregations;
+} as Aggregations; // Explicitly type as Aggregations
 
-// Export FieldType type and widget function
+// Export FieldType for consistent typing across the application.
 export type FieldType = ReturnType<typeof widget>;
 export default widget;
